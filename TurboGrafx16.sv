@@ -144,7 +144,7 @@ parameter CONF_STR1 = {
 	"FS13,PCEBIN,Load TurboGrafx;",
 	"FS13,SGX,Load SuperGrafx;",
 	"S0,ISOBIN,Mount ISO CD Image;",
-	"-;"
+	"5,Mount CD drive;"
 };
 parameter CONF_STR2 = {
 	"G,Load Backup RAM;"
@@ -503,16 +503,35 @@ sdram sdram
 	.clk(clk_ram),
 	.clkref(ce_rom),
 
-	.waddr(romwr_a),
-	.din(romwr_d),
-	.we(rom_wr),
+	.waddr(sdram_waddr),
+	.din(sdram_din),
+	.we(sdram_wr),
 	.we_ack(sd_wrack),
+	.byte_ena(sdram_be),
 
-	.raddr(rom_rdaddr + (romwr_a[9] ? 28'h200 : 28'h0)),
+	.raddr(sdram_raddr),
 	.rd(use_sdr & rom_rd),
 	.rd_rdy(rom_sdrdy),
 	.dout(rom_sdata)
 );
+
+//ROM_SEL_N     <= '0' when CPU_A(20 downto 13) >= x"00" and CPU_A(20 downto 13) <= x"67" else '1'; -- ROM : Page $00 - $67
+//SUP_RAM_SEL_N <= '0' when CPU_A(20 downto 13) >= x"68" and CPU_A(20 downto 13) <= x"7F" else '1'; -- Super System Card RAM : Page $68 - $7F. 192KB.
+//CD_RAM_SEL_N  <= '0' when CPU_A(20 downto 13) >= x"80" and CPU_A(20 downto 13) <= x"87" else '1'; -- CD drive RAM : Page $80 - $87. 64KB. ElectronAsh.
+
+wire CD_RAM_CS = (CPU_ADDR[20:13] >= 8'h68 && CPU_ADDR[20:13] <= 8'h87);
+wire [1:0] cpu_be = CPU_ADDR[0] ? 2'b10 : 2'b01;
+
+// Write muxes...
+wire [24:0] sdram_waddr = (ioctl_download) ? romwr_a : CPU_ADDR;	// Note: SDRAM block culls the LSB bit of waddr (byte addr), so we don't need to here.
+wire [15:0] sdram_din   = (ioctl_download) ? romwr_d : {CPU_DO, CPU_DO};
+wire sdram_wr           = (ioctl_download) ? rom_wr  : (CLKEN_OUT && !CPU_WR_N && CD_RAM_CS);
+wire [1:0] sdram_be     = (ioctl_download) ? 2'b11   : cpu_be;
+
+// Read muxes...
+wire [24:0] sdram_raddr = (!CD_RAM_CS) ? rom_rdaddr + (romwr_a[9] ? 28'h200 : 28'h0) : CPU_ADDR;
+//wire sdram_rd = (!CD_RAM_CS) ? (use_sdr & rom_rd) : 
+
 
 wire        romwr_ack;
 reg  [23:0] romwr_a;
@@ -525,6 +544,7 @@ reg  rom_wr = 0;
 wire sd_wrack, dd_wrack;
 
 reg [1:0] populous;
+reg [2:0] hucard_type;
 reg sgx;
 always @(posedge clk_sys) begin
 	reg old_download, old_reset;
@@ -536,6 +556,7 @@ always @(posedge clk_sys) begin
 	if(~old_download && ioctl_download) begin
 		romwr_a <= 0;
 		populous <= 2'b11;
+		hucard_type <= 3'd0;
 		sgx <= (ioctl_index[4:0] == 2);
 	end
 	else begin

@@ -48,7 +48,9 @@ module sdram
 	input      [24:0] waddr,      // 25 bit byte address
 	input      [15:0] din,			// data input from chipset/cpu
 	input             we,         // cpu/chipset requests write
-	output reg        we_ack = 0
+	output reg        we_ack = 0,
+	
+	input      [1:0]  byte_ena
 );
 
 assign SDRAM_CKE = ~init;
@@ -175,7 +177,7 @@ always @(posedge clk) begin
 	if(q == STATE_START) begin
 		SDRAM_BA <= (mode == MODE_NORMAL) ? bank : 2'b00;
 		SDRAM_DQ <= wr ? data : 16'bZZZZZZZZZZZZZZZZ;
-		{SDRAM_DQMH,SDRAM_DQML} <= 0;
+		{SDRAM_DQMH,SDRAM_DQML} <= (wr) ? ~byte_ena : 2'b00;
 	end
 
 	if (q == STATE_READY) begin

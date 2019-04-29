@@ -97,7 +97,8 @@ end
 wire audio_clk_en = (audio_clk_div==0);
 
 
-wire audio_fifo_reset = RESET | !cdda_play;
+//wire audio_fifo_reset = RESET | !cdda_play;
+wire audio_fifo_reset = RESET;
 
 wire audio_fifo_full;
 wire audio_fifo_wr = !audio_fifo_full && sd_ack && sd_buff_wr && cdda_play;
@@ -828,7 +829,12 @@ always_ff @(posedge CLOCK) begin
 				end
 				2: begin
 					// "sd_ack" low denotes a sector has just transferred.
-					if (!sd_ack && audio_fifo_usedw<1700) begin
+					
+					if (cmd_buff[0]==8'h08) begin	// STOP CDDA playback as soon as a READ command is seen! TESTING !!!
+						cdda_play <= 1'b0;
+						cdda_state <= 0;
+					end
+					else if (!sd_ack && audio_fifo_usedw<1700) begin
 						if (current_frame < end_frame && cdda_play) begin	// Check if we've reached end_frame yet (and cdda_play is still set).
 							current_frame <= current_frame + 1;
 							sd_lba <= sd_lba + 1;
@@ -839,7 +845,7 @@ always_ff @(posedge CLOCK) begin
 							case (cdda_mode)
 							1: begin			// Repeat.
 								current_frame <= start_frame;	// Set back to the start frame.
-								cdda_play <= 1'b1;	// Keep playing (don't really need to set this again).
+								//cdda_play <= 1'b1;	// Keep playing (don't really need to set this again).
 								cdda_state <= 0;
 							end
 							2: begin			// IRQ when finished.
@@ -946,7 +952,8 @@ always_ff @(posedge CLOCK) begin
 					8'h08: begin	// READ (6).
 						case (read_state)
 						0: begin
-							cdda_play <= 1'b0;		// STOP CDDA Playback immediately!
+							cdda_status <= 2'd0;	// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
+							cdda_play <= 1'b0;	// STOP CDDA Playback immediately!
 						
 							frame <= {cmd_buff[1][4:0], cmd_buff[2], cmd_buff[3]};
 							frame_count <= cmd_buff[4];
@@ -1037,7 +1044,7 @@ always_ff @(posedge CLOCK) begin
 						if (cmd_buff[1] & 8'h03) begin	// According to MAME, this mode plays until the end of the DISK.
 							cdda_status <= 2'd1;		// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
 							cdda_state <= 0;
-							cdda_mode <= cmd_buff[1][1:0];	// Mode 2 sets IRQ at the end. (MAME).
+							cdda_mode <= (cmd_buff[1] & 8'h02) ? 2 : 3;	// Mode 2 sets IRQ at the end. (MAME).
 							cdda_play <= 1'b1;
 						end
 						else begin										// And this mode plays until the end of the current TRACK.
@@ -1070,17 +1077,17 @@ always_ff @(posedge CLOCK) begin
 						end
 						endcase
 						
-						if (cmd_buff[1] & 8'h03) begin
-							cdda_mode <= cmd_buff[1][1:0]; // mode 2 sets IRQ at end
+						cdda_mode <= cmd_buff[1][1:0];
 						
-							if (cdda_status==2'd2) begin
+						if (cmd_buff[1] & 8'h03) begin						
+							if (cdda_status==2'd2) begin // Is CDDA PAUSED?...
 								cdda_status <= 2'd2;	// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
 								cdda_play <= 1'b0;	// PAUSE audio!
 								cdda_state <= 0;
 							end
 							else begin
 								cdda_status <= 2'd1;	// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
-								cdda_play <= 1'b1;
+								//cdda_play <= 1'b1;
 								cdda_state <= 0;
 							end
 						end
@@ -1097,6 +1104,8 @@ always_ff @(posedge CLOCK) begin
 					end
 					
 					8'hDA: begin	// NEC_PAUSE (10).
+						cdda_status <= 2'd2;		// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
+						cdda_play <= 1'b0;
 						data_buffer_pos <= 0;
 						DONE_FLAG <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
 						phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
