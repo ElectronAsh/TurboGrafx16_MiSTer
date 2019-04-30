@@ -53,7 +53,7 @@ cd_data_buffer	cd_data_buffer_inst (
 
 	.address ( data_buffer_addr ),	// 32KB.
 	.data ( data_buffer_din ),
-	.wren ( data_buffer_wr ),
+	.wren ( data_buffer_wr & !adpcm_dma_active ),	// Inhibit writes when ADPCM DMA is active (only write to the ADPCM RAM).
 	
 	.q ( data_buffer_dout )
 );
@@ -150,7 +150,8 @@ reg adpcm_reset;
 reg adpcm_playing;
 reg adpcm_reading;		// "ADPCM RAM to something" flag. Direct reads??
 reg adpcm_dma_active;	// "CD to ADPCM RAM, DMA running" flag.
-wire [7:0] adpcm_status = {adpcm_reading, 3'b000, adpcm_playing, adpcm_dma_active, 1'b0, !adpcm_playing};	// 0x180C.
+//wire [7:0] adpcm_status = {adpcm_reading, 3'b000, adpcm_playing, adpcm_dma_active, 1'b0, !adpcm_playing};	// 0x180C.
+wire [7:0] adpcm_status = {adpcm_reading, 3'b000, adpcm_playing, 1'b0, 1'b0, !adpcm_playing};	// 0x180C.
 
 reg adpcm_repeat;
 
@@ -470,16 +471,31 @@ always_ff @(posedge CLOCK) begin
 		old_ack <= sd_ack;
 		
 		adpcm_ram_wr <= 1'b0;
+		
+		/*
+		if (adpcm_dma_active) begin
+			if (data_buffer_wr) begin
+				if (data_buffer_pos < data_buffer_size-1) begin	// data_buffer_pos gets incremented for us by the READ command logic.
+					adpcm_write_addr <= adpcm_write_addr + 1;
+				end
+				else begin
+					adpcm_dma_active <= 1'b0;
+					READY_FLAG <= 1'b0;	// ??
+					DONE_FLAG <= 1'b1;
+					phase <= PHASE_STATUS;
+				end
+			end
+		end
+		*/
+		
 
 		if (phase==PHASE_DATA_IN && !CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h08) begin
 			if (data_buffer_pos < data_buffer_size-1) begin
 				data_buffer_pos <= data_buffer_pos + 1;
-				if (adpcm_dma_active) adpcm_write_addr <= adpcm_write_addr + 1;
 			end
 			else begin
-				adpcm_dma_active <= 1'b0;	// TESTING !!
 				data_buffer_pos <= 0;
-				READY_FLAG <=1'b0;	// Clear IRQ_TRANSFER_READY flag! (MAME does this. Sort of).
+				READY_FLAG <= 1'b0;	// Clear IRQ_TRANSFER_READY flag! (MAME does this. Sort of).
 				DONE_FLAG <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
 				phase <= PHASE_STATUS;
 			end
@@ -586,7 +602,7 @@ always_ff @(posedge CLOCK) begin
 						READY_FLAG <=1'b0;	//	 Clear [6]=READY_INT_SIG.
 						DONE_FLAG <= 1'b0;	//	 Clear [5]=DONE_INT_SIG.
 						
-						adpcm_dma_active <= 1'b0;	// Stop the ADPCM DMA transfer!
+						//adpcm_dma_active <= 1'b0;	// Stop the ADPCM DMA transfer!
 						
 						// The MAME code normally assumes there is only ONE drive on the bus.
 						// So no real point checking to see if the ID matches before setting SCSI_SEL.
@@ -658,6 +674,7 @@ always_ff @(posedge CLOCK) begin
 
 						if (DIN & 8'h03) begin
 							adpcm_dma_active <= 1'b1;		// adpcm_status, bit [2] (0x04).
+							DONE_FLAG <= 1'b1;			// TESTING !!
 						end
 					end
 					8'h0C: begin	// 0x180C
@@ -666,7 +683,7 @@ always_ff @(posedge CLOCK) begin
 					8'h0D: begin	// 0x180D
 						//adpcm_address_control <= DIN;
 						
-						if (DIN[7]) adpcm_reset <= 1'b1;	// (Handling the actual reg clearing with some logic above).
+						if (DIN[7]) adpcm_reset <= 1'b1;	// (Handling the actual reg clearing with some logic below).
 						
 						if (DIN[6]) begin
 							adpcm_start_addr <= adpcm_read_addr;
@@ -801,19 +818,9 @@ always_ff @(posedge CLOCK) begin
 					
 					adpcm_reading <= 1'b0;
 					adpcm_playing <= 1'b0;
-					adpcm_dma_active <= 1'b0;
 				end
 		
-				// Spoofing the ADPCM DMA transfer for now.
-				// This would normally transfer data directly from the CD into the 64KB ADPCM RAM.
-				/*
-				if (adpcm_dma_active && cmd_buff[0]==8'h08 && phase==PHASE_DATA_IN) begin
-					adpcm_dma_active <= 1'b0;	// Clear adpcm_status, bit [2] (0x04). DMA done!
-					DONE_FLAG <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
-					phase <= PHASE_STATUS;
-				end
-				*/
-				
+
 				if (adpcm_playing) begin
 					if (audio_clk_en && adpcm_read_addr < adpcm_end_addr) begin
 						adpcm_read_addr <= adpcm_read_addr + 1'b1;
@@ -1011,7 +1018,8 @@ always_ff @(posedge CLOCK) begin
 						2: begin						
 							if (sd_buff_wr) begin
 								data_buffer_pos <= data_buffer_pos + 1;
-								data_buffer_wr_force = 1;			// Force another write to the (8-bit) data buffer on the NEXT clock, for the upper data byte (16-bit HPS bus).
+								if (adpcm_dma_active) adpcm_write_addr <= adpcm_write_addr + 1;
+								data_buffer_wr_force = 1'b1;			// Force another write to the (8-bit) data buffer on the NEXT clock, for the upper data byte (16-bit HPS bus).
 								read_state <= read_state + 1;		// (the lower data byte will get written directly by the HPS via sd_wr.)
 							end
 							
@@ -1023,8 +1031,9 @@ always_ff @(posedge CLOCK) begin
 						end
 						
 						3: begin
-							data_buffer_wr_force = 0;
+							data_buffer_wr_force = 1'b0;
 							data_buffer_pos <= data_buffer_pos + 1;
+							if (adpcm_dma_active) adpcm_write_addr <= adpcm_write_addr + 1;
 							read_state <= read_state - 1;		// Loop back, to transfer the rest of the bytes for the current SD sector.
 						end
 						
@@ -1043,8 +1052,16 @@ always_ff @(posedge CLOCK) begin
 								//sd_lba <= 0;					// Sanity check.
 								//sd_req_type <= 16'h0000;	// Set back to 0, in case other commands need RAW SD / VHD sectors (or TOC info).
 								data_buffer_pos <= 0;
-								READY_FLAG <=1'b1;	// Set IRQ_TRANSFER_READY flag!
-								phase <= PHASE_DATA_IN;
+								
+								if (adpcm_dma_active) begin
+									adpcm_dma_active <= 1'b0;
+									DONE_FLAG <= 1'b1;
+									phase <= PHASE_STATUS;
+								end
+								else begin
+									READY_FLAG <=1'b1;	// Set IRQ_TRANSFER_READY flag!
+									phase <= PHASE_DATA_IN;
+								end
 							end
 						end
 						default:;
