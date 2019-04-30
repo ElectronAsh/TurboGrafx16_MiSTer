@@ -48,9 +48,9 @@ assign CPU_DI_DBG = CPU_DI;
 
 
 //assign CPU_DO = (!CS_N && !RD_N) ? {4'hF, V4_GATE, V3_GATE, V2_GATE, V1_GATE} : 8'hzz;
-`ifndef VERILATOR 
-assign CPU_DO = {4'b1111, V4_GATE, V3_GATE, V2_GATE, V1_GATE};
-`endif
+//`ifndef VERILATOR 
+//assign CPU_DO = {4'b1111, V4_GATE, V3_GATE, V2_GATE, V1_GATE};
+//`endif
 
 
 // Limited these to 6 bits, since the maximum value is 0x20 for the volumes.

@@ -84,11 +84,11 @@ always @(posedge CLOCK) begin
 	else begin
 		left_chan <= !left_chan;
 		audio_clk_div <= 486;
-		if (left_chan) temp_l <= audio_fifo_dout;
+		//if (left_chan) temp_l <= audio_fifo_dout;
+		if (left_chan) samp_l <= audio_fifo_dout;
 		else begin
 			// Make sure both the left and right samples get output at the same time.
-			// Just a minor thing, but Ace will notice. :p
-			samp_l <= temp_l;
+			//samp_l <= temp_l;
 			samp_r <= audio_fifo_dout;
 		end
 	end
@@ -148,14 +148,14 @@ reg [1:0] stat_counter;	// Kludge.
 reg adpcm_reset;
 
 reg adpcm_playing;
-reg adpcm_reading;	// "ADPCM RAM to something" flag. Direct reads??
-reg adpcm_writing;	// "CD to ADPCM RAM, DMA running" flag. Probably.
-wire [7:0] adpcm_status = {adpcm_reading, 3'b000, adpcm_playing, adpcm_writing, 1'b0, !adpcm_playing};	// 0x180C.
+reg adpcm_reading;		// "ADPCM RAM to something" flag. Direct reads??
+reg adpcm_dma_active;	// "CD to ADPCM RAM, DMA running" flag.
+wire [7:0] adpcm_status = {adpcm_reading, 3'b000, adpcm_playing, adpcm_dma_active, 1'b0, !adpcm_playing};	// 0x180C.
 
 reg adpcm_repeat;
 
-reg [15:0] adpcm_read_addr;
 reg [15:0] adpcm_write_addr;
+reg [15:0] adpcm_read_addr;
 reg [15:0] adpcm_length;
 
 reg [15:0] adpcm_start_addr;
@@ -168,6 +168,24 @@ wire ADPCM_FULL_FLAG = adpcm_read_addr == adpcm_end_addr;
 
 //wire adpcm_address_control = {adpcm_reset, 1'b0, adpcm_repeat, 
 wire [7:0] adpcm_address_control = {adpcm_reset, 1'b0, 1'b0, 5'b00000};
+
+reg adpcm_ram_wr;
+
+wire [7:0] adpcm_ram_din = (adpcm_dma_active) ? data_buffer_din : adpcm_ram_wdata;
+wire      adpcm_ram_wren = (adpcm_dma_active) ? data_buffer_wr  : adpcm_ram_wr;
+
+wire [7:0] adpcm_ram_rdata;
+
+adpcm_ram	adpcm_ram_inst (
+	.clock ( CLOCK ),
+
+	.wraddress ( adpcm_write_addr ),
+	.data ( adpcm_ram_din ),
+	.wren ( adpcm_ram_wren ),
+
+	.rdaddress ( adpcm_read_addr ),
+	.q ( adpcm_ram_rdata )
+);
 
 
 // Crusty BCD to DEC conversion, but it works.
@@ -211,7 +229,9 @@ always_comb begin
 		//8'h08: DOUT <= data_buffer_dout;
 		
 		8'h09: DOUT <= adpcm_address_high;
-		8'h0A: DOUT <= adpcm_ram_data;
+		
+		8'h0A: DOUT <= adpcm_ram_rdata;
+		
 		8'h0B: DOUT <= adpcm_dma_control;
 		8'h0C: DOUT <= adpcm_status;
 		8'h0D: DOUT <= adpcm_address_control;
@@ -268,7 +288,7 @@ reg [7:0] pcm_data;               // $1806 - PCM data
 reg [7:0] bram_unlock;            // $1807 - BRAM unlock / CD status
 reg [7:0] adpcm_address_low;      // $1808 - ADPCM address (LSB) / CD data
 reg [7:0] adpcm_address_high;     // $1809 - ADPCM address (MSB)
-reg [7:0] adpcm_ram_data;         // $180A - ADPCM RAM data port
+reg [7:0] adpcm_ram_wdata;        // $180A - ADPCM RAM (write) data port
 reg [7:0] adpcm_dma_control;      // $180B - ADPCM DMA control
 //reg [7:0] adpcm_status;           // $180C - ADPCM status
 //reg [7:0] adpcm_address_control;  // $180D - ADPCM address control
@@ -409,7 +429,7 @@ assign IRQ2_ASSERT = (int_mask & bram_lock & 8'h7C);
 // BRAM_UNLOCK <= 8'h00;		// 0x1807. [7]=Unlocks BRAM when SET.
 // ADPCM_A_LO <= 8'h00;			// 0x1808. ADPCM Addr LSB. CD DATA gets read by the PCE from this address!!
 // ADPCM_A_HI <= 8'h00;			// 0x1809. ADPCM Addr MSB.
-// ADPCM_RAM_DATA <= 8'h00;	// 0x180A. ADPCM Data port.
+// adpcm_ram_wdata <= 8'h00;	// 0x180A. ADPCM Data port.
 // ADPCM_DMA_CONT <= 8'h00;	// 0x180B. 
 // ADPCM_STAT <= 8'h00;			// 0x180C. [7]=ADPCM is reading data. [3]=ADPCM Playing. [2]=Pending ADPCM write. [0]=ADPCM Stopped.
 // ADPCM_ADDR_CONT <= 8'h00;	// 0x180D. [7]=ADPCM Reset. [6]=ADPCM Play. [5]=ADPCM Repeat. [4]=ADPCM Set Length. [3]=ADPCM Read Addr. [1:0]=ADPCM Write Addr.
@@ -448,12 +468,16 @@ always_ff @(posedge CLOCK) begin
 		//sd_wr <= 1'b0;
 		
 		old_ack <= sd_ack;
+		
+		adpcm_ram_wr <= 1'b0;
 
 		if (phase==PHASE_DATA_IN && !CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h08) begin
 			if (data_buffer_pos < data_buffer_size-1) begin
 				data_buffer_pos <= data_buffer_pos + 1;
+				if (adpcm_dma_active) adpcm_write_addr <= adpcm_write_addr + 1;
 			end
 			else begin
+				adpcm_dma_active <= 1'b0;	// TESTING !!
 				data_buffer_pos <= 0;
 				READY_FLAG <=1'b0;	// Clear IRQ_TRANSFER_READY flag! (MAME does this. Sort of).
 				DONE_FLAG <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
@@ -525,7 +549,8 @@ always_ff @(posedge CLOCK) begin
 						//DOUT <= adpcm_address_high;
 					end
 					8'h0A: begin	// 0x180A
-						//DOUT <= adpcm_ram_data;
+						//DOUT <= adpcm_ram_rdata;	// Routed via the read mux now.
+						adpcm_read_addr <= adpcm_read_addr + 1;
 					end
 					8'h0B: begin	// 0x180B
 						//DOUT <= adpcm_dma_control;
@@ -560,6 +585,8 @@ always_ff @(posedge CLOCK) begin
 						//bram_lock[7] <= 1'b0;	//	 Clear [7]=bram_locked, but not?
 						READY_FLAG <=1'b0;	//	 Clear [6]=READY_INT_SIG.
 						DONE_FLAG <= 1'b0;	//	 Clear [5]=DONE_INT_SIG.
+						
+						adpcm_dma_active <= 1'b0;	// Stop the ADPCM DMA transfer!
 						
 						// The MAME code normally assumes there is only ONE drive on the bus.
 						// So no real point checking to see if the ID matches before setting SCSI_SEL.
@@ -622,13 +649,15 @@ always_ff @(posedge CLOCK) begin
 						adpcm_address_high <= DIN;
 					end
 					8'h0A: begin	// 0x180A
-						adpcm_ram_data <= DIN;
+						adpcm_ram_wdata <= DIN;
+						adpcm_ram_wr <= 1'b1;
+						adpcm_write_addr <= adpcm_write_addr + 1;
 					end
 					8'h0B: begin	// 0x180B
 						adpcm_dma_control <= DIN;
 
 						if (DIN & 8'h03) begin
-							adpcm_writing <= 1'b1;		// adpcm_status, bit [2] (0x04).
+							adpcm_dma_active <= 1'b1;		// adpcm_status, bit [2] (0x04).
 						end
 					end
 					8'h0C: begin	// 0x180C
@@ -637,7 +666,7 @@ always_ff @(posedge CLOCK) begin
 					8'h0D: begin	// 0x180D
 						//adpcm_address_control <= DIN;
 						
-						if (DIN[7]) adpcm_reset <= 1'b1;
+						if (DIN[7]) adpcm_reset <= 1'b1;	// (Handling the actual reg clearing with some logic above).
 						
 						if (DIN[6]) begin
 							adpcm_start_addr <= adpcm_read_addr;
@@ -690,11 +719,13 @@ always_ff @(posedge CLOCK) begin
 				bram_unlock           <= 8'b0;
 				adpcm_address_low     <= 8'b0;
 				adpcm_address_high    <= 8'b0;
-				adpcm_ram_data        <= 8'b0;
+				adpcm_ram_wdata        <= 8'b0;
 				adpcm_dma_control     <= 8'b0;
 				//adpcm_address_control <= 8'b0;
 				adpcm_playback_rate   <= 8'b0;
 				adpcm_fade_timer      <= 8'b0;
+				
+				adpcm_ram_wr <= 1'b0;
 				
 				status_state <= 0;
 				message_state <= 0;
@@ -770,16 +801,18 @@ always_ff @(posedge CLOCK) begin
 					
 					adpcm_reading <= 1'b0;
 					adpcm_playing <= 1'b0;
-					adpcm_writing <= 1'b0;
+					adpcm_dma_active <= 1'b0;
 				end
 		
 				// Spoofing the ADPCM DMA transfer for now.
 				// This would normally transfer data directly from the CD into the 64KB ADPCM RAM.
-				if (adpcm_writing && cmd_buff[0]==8'h08 && phase==PHASE_DATA_IN) begin
-					adpcm_writing <= 1'b0;	// Clear adpcm_status, bit [2] (0x04). DMA done!
+				/*
+				if (adpcm_dma_active && cmd_buff[0]==8'h08 && phase==PHASE_DATA_IN) begin
+					adpcm_dma_active <= 1'b0;	// Clear adpcm_status, bit [2] (0x04). DMA done!
 					DONE_FLAG <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
 					phase <= PHASE_STATUS;
 				end
+				*/
 				
 				if (adpcm_playing) begin
 					if (audio_clk_en && adpcm_read_addr < adpcm_end_addr) begin
@@ -834,7 +867,7 @@ always_ff @(posedge CLOCK) begin
 						cdda_play <= 1'b0;
 						cdda_state <= 0;
 					end
-					else if (!sd_ack && audio_fifo_usedw<1700) begin
+					else if (!sd_ack && audio_fifo_usedw<=1176) begin
 						if (current_frame < end_frame && cdda_play) begin	// Check if we've reached end_frame yet (and cdda_play is still set).
 							current_frame <= current_frame + 1;
 							sd_lba <= sd_lba + 1;
