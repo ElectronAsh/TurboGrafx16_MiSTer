@@ -372,7 +372,7 @@ wire [15:0] cd_audio_r;
 wire IRQ2_ASSERT;
 wire IRQ2_N = !IRQ2_ASSERT;
 
-wire bram_locked;
+//wire bram_locked;	// *
 
 pcecd_top pcecd_top_inst
 (

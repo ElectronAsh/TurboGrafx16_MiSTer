@@ -53,7 +53,7 @@ cd_data_buffer	cd_data_buffer_inst (
 
 	.address ( data_buffer_addr ),	// 32KB.
 	.data ( data_buffer_din ),
-	.wren ( data_buffer_wr & !adpcm_dma_active ),	// Inhibit writes when ADPCM DMA is active (only write to the ADPCM RAM).
+	.wren ( data_buffer_wr ),
 	
 	.q ( data_buffer_dout )
 );
@@ -78,17 +78,17 @@ always @(posedge CLOCK) begin
 	
 	// Set left channel on rising edge of sd_ack.
 	// This should override the above assign!
-	if (sd_ack && !sd_ack_1) left_chan <= 1'b1;
+	//if (sd_ack && !sd_ack_1) left_chan <= 1'b1;
 
 	if (audio_clk_div>0) audio_clk_div <= audio_clk_div - 1;	
 	else begin
 		left_chan <= !left_chan;
 		audio_clk_div <= 486;
-		//if (left_chan) temp_l <= audio_fifo_dout;
-		if (left_chan) samp_l <= audio_fifo_dout;
+		if (left_chan) temp_l <= audio_fifo_dout;
 		else begin
 			// Make sure both the left and right samples get output at the same time.
-			//samp_l <= temp_l;
+			// Just a minor thing, but Ace will notice. :p
+			samp_l <= temp_l;
 			samp_r <= audio_fifo_dout;
 		end
 	end
@@ -97,8 +97,7 @@ end
 wire audio_clk_en = (audio_clk_div==0);
 
 
-//wire audio_fifo_reset = RESET | !cdda_play;
-wire audio_fifo_reset = RESET;
+wire audio_fifo_reset = RESET | !cdda_play;
 
 wire audio_fifo_full;
 wire audio_fifo_wr = !audio_fifo_full && sd_ack && sd_buff_wr && cdda_play;
@@ -148,15 +147,14 @@ reg [1:0] stat_counter;	// Kludge.
 reg adpcm_reset;
 
 reg adpcm_playing;
-reg adpcm_reading;		// "ADPCM RAM to something" flag. Direct reads??
-reg adpcm_dma_active;	// "CD to ADPCM RAM, DMA running" flag.
-//wire [7:0] adpcm_status = {adpcm_reading, 3'b000, adpcm_playing, adpcm_dma_active, 1'b0, !adpcm_playing};	// 0x180C.
-wire [7:0] adpcm_status = {adpcm_reading, 3'b000, adpcm_playing, 1'b0, 1'b0, !adpcm_playing};	// 0x180C.
+reg adpcm_reading;	// "ADPCM RAM to something" flag. Direct reads??
+reg adpcm_dma_active;	// "CD to ADPCM RAM, DMA running" flag. Probably.
+wire [7:0] adpcm_status = {adpcm_reading, 3'b000, adpcm_playing, adpcm_dma_active, 1'b0, !adpcm_playing};	// 0x180C.
 
 reg adpcm_repeat;
 
-reg [15:0] adpcm_write_addr;
 reg [15:0] adpcm_read_addr;
+reg [15:0] adpcm_write_addr;
 reg [15:0] adpcm_length;
 
 reg [15:0] adpcm_start_addr;
@@ -187,7 +185,6 @@ adpcm_ram	adpcm_ram_inst (
 	.rdaddress ( adpcm_read_addr ),
 	.q ( adpcm_ram_rdata )
 );
-
 
 // Crusty BCD to DEC conversion, but it works.
 wire [7:0] m_dec = (cmd_buff[2][7:4]*10) + cmd_buff[2][3:0];
@@ -230,9 +227,7 @@ always_comb begin
 		//8'h08: DOUT <= data_buffer_dout;
 		
 		8'h09: DOUT <= adpcm_address_high;
-		
 		8'h0A: DOUT <= adpcm_ram_rdata;
-		
 		8'h0B: DOUT <= adpcm_dma_control;
 		8'h0C: DOUT <= adpcm_status;
 		8'h0D: DOUT <= adpcm_address_control;
@@ -289,7 +284,7 @@ reg [7:0] pcm_data;               // $1806 - PCM data
 reg [7:0] bram_unlock;            // $1807 - BRAM unlock / CD status
 reg [7:0] adpcm_address_low;      // $1808 - ADPCM address (LSB) / CD data
 reg [7:0] adpcm_address_high;     // $1809 - ADPCM address (MSB)
-reg [7:0] adpcm_ram_wdata;        // $180A - ADPCM RAM (write) data port
+reg [7:0] adpcm_ram_wdata;         // $180A - ADPCM RAM data port
 reg [7:0] adpcm_dma_control;      // $180B - ADPCM DMA control
 //reg [7:0] adpcm_status;           // $180C - ADPCM status
 //reg [7:0] adpcm_address_control;  // $180D - ADPCM address control
@@ -470,7 +465,7 @@ always_ff @(posedge CLOCK) begin
 		
 		old_ack <= sd_ack;
 		
-		adpcm_ram_wr <= 1'b0;
+		//adpcm_ram_wr <= 1'b0;	// *
 		
 		/*
 		if (adpcm_dma_active) begin
@@ -488,7 +483,6 @@ always_ff @(posedge CLOCK) begin
 		end
 		*/
 		
-
 		if (phase==PHASE_DATA_IN && !CS_N & CDR_RD_N_RISING && ADDR[7:0]==8'h08) begin
 			if (data_buffer_pos < data_buffer_size-1) begin
 				data_buffer_pos <= data_buffer_pos + 1;
@@ -666,15 +660,15 @@ always_ff @(posedge CLOCK) begin
 					end
 					8'h0A: begin	// 0x180A
 						adpcm_ram_wdata <= DIN;
-						adpcm_ram_wr <= 1'b1;
-						adpcm_write_addr <= adpcm_write_addr + 1;
+						//adpcm_ram_wr <= 1'b1;								// *
+						//adpcm_write_addr <= adpcm_write_addr + 1;	// *
 					end
 					8'h0B: begin	// 0x180B
 						adpcm_dma_control <= DIN;
 
 						if (DIN & 8'h03) begin
 							adpcm_dma_active <= 1'b1;		// adpcm_status, bit [2] (0x04).
-							DONE_FLAG <= 1'b1;			// TESTING !!
+							//DONE_FLAG <= 1'b1;			// TESTING !!
 						end
 					end
 					8'h0C: begin	// 0x180C
@@ -742,8 +736,7 @@ always_ff @(posedge CLOCK) begin
 				adpcm_playback_rate   <= 8'b0;
 				adpcm_fade_timer      <= 8'b0;
 				
-				adpcm_ram_wr <= 1'b0;
-				
+				//adpcm_ram_wr <= 1'b0;	// *
 				status_state <= 0;
 				message_state <= 0;
 				command_state <= 0;
@@ -818,9 +811,19 @@ always_ff @(posedge CLOCK) begin
 					
 					adpcm_reading <= 1'b0;
 					adpcm_playing <= 1'b0;
+					adpcm_dma_active <= 1'b0;
+					
+					//adpcm_dma_active <= 1'b0;	// *
 				end
 		
-
+				// Spoofing the ADPCM DMA transfer for now.
+				// This would normally transfer data directly from the CD into the 64KB ADPCM RAM.
+				if (adpcm_dma_active && cmd_buff[0]==8'h08 && phase==PHASE_DATA_IN) begin
+					adpcm_dma_active <= 1'b0;	// Clear adpcm_status, bit [2] (0x04). DMA done!
+					DONE_FLAG <= 1'b1;			// Set IRQ_TRANSFER_DONE flag!
+					phase <= PHASE_STATUS;
+				end
+				
 				if (adpcm_playing) begin
 					if (audio_clk_en && adpcm_read_addr < adpcm_end_addr) begin
 						adpcm_read_addr <= adpcm_read_addr + 1'b1;
@@ -869,12 +872,7 @@ always_ff @(posedge CLOCK) begin
 				end
 				2: begin
 					// "sd_ack" low denotes a sector has just transferred.
-					
-					if (cmd_buff[0]==8'h08) begin	// STOP CDDA playback as soon as a READ command is seen! TESTING !!!
-						cdda_play <= 1'b0;
-						cdda_state <= 0;
-					end
-					else if (!sd_ack && audio_fifo_usedw<=1176) begin
+					if (!sd_ack && audio_fifo_usedw<1700) begin
 						if (current_frame < end_frame && cdda_play) begin	// Check if we've reached end_frame yet (and cdda_play is still set).
 							current_frame <= current_frame + 1;
 							sd_lba <= sd_lba + 1;
@@ -885,7 +883,7 @@ always_ff @(posedge CLOCK) begin
 							case (cdda_mode)
 							1: begin			// Repeat.
 								current_frame <= start_frame;	// Set back to the start frame.
-								//cdda_play <= 1'b1;	// Keep playing (don't really need to set this again).
+								cdda_play <= 1'b1;	// Keep playing (don't really need to set this again).
 								cdda_state <= 0;
 							end
 							2: begin			// IRQ when finished.
@@ -992,8 +990,7 @@ always_ff @(posedge CLOCK) begin
 					8'h08: begin	// READ (6).
 						case (read_state)
 						0: begin
-							cdda_status <= 2'd0;	// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
-							cdda_play <= 1'b0;	// STOP CDDA Playback immediately!
+							cdda_play <= 1'b0;		// STOP CDDA Playback immediately!
 						
 							frame <= {cmd_buff[1][4:0], cmd_buff[2], cmd_buff[3]};
 							frame_count <= cmd_buff[4];
@@ -1018,8 +1015,7 @@ always_ff @(posedge CLOCK) begin
 						2: begin						
 							if (sd_buff_wr) begin
 								data_buffer_pos <= data_buffer_pos + 1;
-								if (adpcm_dma_active) adpcm_write_addr <= adpcm_write_addr + 1;
-								data_buffer_wr_force = 1'b1;			// Force another write to the (8-bit) data buffer on the NEXT clock, for the upper data byte (16-bit HPS bus).
+								data_buffer_wr_force = 1;			// Force another write to the (8-bit) data buffer on the NEXT clock, for the upper data byte (16-bit HPS bus).
 								read_state <= read_state + 1;		// (the lower data byte will get written directly by the HPS via sd_wr.)
 							end
 							
@@ -1033,7 +1029,6 @@ always_ff @(posedge CLOCK) begin
 						3: begin
 							data_buffer_wr_force = 1'b0;
 							data_buffer_pos <= data_buffer_pos + 1;
-							if (adpcm_dma_active) adpcm_write_addr <= adpcm_write_addr + 1;
 							read_state <= read_state - 1;		// Loop back, to transfer the rest of the bytes for the current SD sector.
 						end
 						
@@ -1052,16 +1047,16 @@ always_ff @(posedge CLOCK) begin
 								//sd_lba <= 0;					// Sanity check.
 								//sd_req_type <= 16'h0000;	// Set back to 0, in case other commands need RAW SD / VHD sectors (or TOC info).
 								data_buffer_pos <= 0;
-								
-								if (adpcm_dma_active) begin
+
+								/*if (adpcm_dma_active) begin
 									adpcm_dma_active <= 1'b0;
 									DONE_FLAG <= 1'b1;
 									phase <= PHASE_STATUS;
 								end
-								else begin
+								else begin*/
 									READY_FLAG <=1'b1;	// Set IRQ_TRANSFER_READY flag!
 									phase <= PHASE_DATA_IN;
-								end
+								//end
 							end
 						end
 						default:;
@@ -1094,7 +1089,7 @@ always_ff @(posedge CLOCK) begin
 						if (cmd_buff[1] & 8'h03) begin	// According to MAME, this mode plays until the end of the DISK.
 							cdda_status <= 2'd1;		// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
 							cdda_state <= 0;
-							cdda_mode <= (cmd_buff[1] & 8'h02) ? 2 : 3;	// Mode 2 sets IRQ at the end. (MAME).
+							cdda_mode <= cmd_buff[1][1:0];	// Mode 2 sets IRQ at the end. (MAME).
 							cdda_play <= 1'b1;
 						end
 						else begin										// And this mode plays until the end of the current TRACK.
@@ -1127,17 +1122,17 @@ always_ff @(posedge CLOCK) begin
 						end
 						endcase
 						
-						cdda_mode <= cmd_buff[1][1:0];
+						if (cmd_buff[1] & 8'h03) begin
+							cdda_mode <= cmd_buff[1][1:0]; // mode 2 sets IRQ at end
 						
-						if (cmd_buff[1] & 8'h03) begin						
-							if (cdda_status==2'd2) begin // Is CDDA PAUSED?...
+							if (cdda_status==2'd2) begin
 								cdda_status <= 2'd2;	// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
 								cdda_play <= 1'b0;	// PAUSE audio!
 								cdda_state <= 0;
 							end
 							else begin
 								cdda_status <= 2'd1;	// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
-								//cdda_play <= 1'b1;
+								cdda_play <= 1'b1;
 								cdda_state <= 0;
 							end
 						end
@@ -1154,8 +1149,6 @@ always_ff @(posedge CLOCK) begin
 					end
 					
 					8'hDA: begin	// NEC_PAUSE (10).
-						cdda_status <= 2'd2;		// 0==CDDA Stopped. 1==CDDA Playing. 2==CDDA Paused.
-						cdda_play <= 1'b0;
 						data_buffer_pos <= 0;
 						DONE_FLAG <= 1'b1;	// Set IRQ_TRANSFER_DONE flag!
 						phase <= PHASE_STATUS;	// TESTING! ElectronAsh.
